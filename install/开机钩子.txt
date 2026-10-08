@@ -1,0 +1,5 @@
+
+### OpenHW Lab downloader+NAS (M301H) ###
+if [ -f /data/nasstart.sh ]; then
+  /system/bin/busybox setsid /system/bin/sh /data/nasstart.sh >/data/nas-boot.log 2>&1 &
+fi

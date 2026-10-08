@@ -1,0 +1,145 @@
+安装教程 —— 把魔百和 M301H 变成「下载机 + NAS」
+
+> OpenHW Lab · 智能硬件开放实验室 · 面向普通用户 / 开发者。约 40–60 分钟。
+> 适用机型：魔百和 M301H（创维 CW 版，型号 M301H_CW0_AH，主控海思 Hi3798MV300 / armv7 / Android 4.4.2）。
+> 本项目在该机型上实测通过。
+
+---
+
+0. 你需要
+- 一台已 root 的魔百和 M301H（创维 CW / 海思 Hi3798MV300 / Android 4.4.2）。
+- （可选）一块 USB 硬盘 / U 盘（ext4 / NTFS / exFAT / FAT 都行；机械盘建议独立供电）。
+- 电视/显示器（HDMI）、路由器（组局域网）、电脑（装 adb）。
+- （强烈建议）TTL 串口线作 root 生命线：本机 console = ttyAMA0, 115200 8N1。
+
+> 总思路：盒子里 chroot 一个 Ubuntu 20.04(armhf) 子系统（/data/linux），里面装
+> aria2（下载）+ Samba（网盘）+ minidlna（DLNA）+ 网页面板 nasd（:8080）；
+> 盒子屏幕装一个「下载机·NAS」全屏网页壳；开机自动拉起全部服务。
+
+---
+
+1. 认清你的盒子
+getprop ro.product.model              # M301H_CW0_AH
+getprop ro.product.cpu.abi            # armeabi-v7a (armv7)
+getprop ro.build.version.release; getprop ro.build.version.sdk   # 4.4.2 / 19
+df -k
+
+> 本盒子是 海思 Hi3798MV300（armv7），要装 armhf 的 Ubuntu。
+
+---
+
+2. 打开控制通道（TTL 串口 / ADB）
+- 串口(TTL)：ttyAMA0, 115200 8N1，上电即拿到 root shell（root@Hi3798MV300:/ #）。
+- ADB over TCP：串口里执行
+    setprop service.adb.tcp.port 5555
+  start adbd
+  
+  电脑 adb connect <盒子IP>:5555。
+  > ⚠️ start 是 /system/bin/start；脚本里用绝对路径。开机早期 start adbd 可能失败 → 我们脚本里重试 8 次。
+
+---
+
+3. 搭 Linux 子系统（CUPS 跑在里面 → 本机是下载服务）
+在盒子 root 里，把 Ubuntu 20.04 armhf 根文件系统放到 /data/linux：
+电脑上下好 ubuntu-base-20.04.5-base-armhf.tar.gz 推到盒子：
+adb push ubuntu-base-20.04.5-base-armhf.tar.gz /data/local/tmp/ubuntu20.tar.gz
+盒子上解包：
+mkdir -p /data/linux
+busybox tar -xzf /data/local/tmp/ubuntu20.tar.gz -C /data/linux
+补挂内核文件系统：
+busybox mount -t proc  proc  /data/linux/proc
+busybox mount -t sysfs sysfs /data/linux/sys
+busybox mount -o bind /dev   /data/linux/dev
+busybox mount -t devpts devpts /data/linux/dev/pts
+
+> ✅ 本机 (Hi3798MV300) 的 chroot 里 apt 可用 → 依赖直接联网装。
+
+配 DNS + 源（/data/linux/etc/resolv.conf + sources.list 用 tuna focal）+ policy-rc.d（阻止 postinst 起服务）。
+> ⚠️ 安卓自带 shell 没有 printf/timeout；busybox 无 cp -n。
+
+进 chroot 跑命令的 helper（/data/local/tmp/cr.sh）：
+!/system/bin/sh
+exec /system/bin/busybox chroot /data/linux /usr/bin/env -i \
+  PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin HOME=/root LANG=C.UTF-8 \
+  /bin/bash -lc "$*"
+
+
+---
+
+4. 装依赖
+sh /data/local/tmp/cr.sh "apt-get update"
+sh /data/local/tmp/cr.sh "apt-get install -y --no-install-recommends \
+  aria2 samba samba-common-bin minidlna qrencode python3 \
+  ntfs-3g exfat-fuse exfat-utils dosfstools ca-certificates"
+
+- aria2 下载引擎 · samba 网盘 · minidlna DLNA · qrencode 二维码
+- ntfs-3g exfat-fuse exfat-utils = 让外接 NTFS/exFAT 盘可用（这 ROM 的 vold 只自动挂 FAT）
+
+---
+
+5. 部署服务
+adb push install/下载服务.py   /data/linux/root/nasd.py
+adb push install/aria2.conf   /data/linux/root/aria2.conf
+adb push install/smb.conf     /data/linux/root/smb.conf
+adb push install/diskwatch.sh /data/linux/root/diskwatch.sh
+adb push install/3-开机自启.sh /data/linux/root/nasstart.sh
+adb shell 'chmod 755 /data/linux/root/nasstart.sh /data/linux/root/diskwatch.sh'
+
+起服务：
+sh /data/local/tmp/cr.sh "bash /root/nasstart.sh"    # aria2 + smbd + nmbd + nasd + diskwatch
+
+
+> ⭐ 存储自动切换：diskwatch.sh 每 10 秒巡检——插了外接盘就把下载/网盘切到 <盘>/nas（bind 到 /root/nas），拔盘自动回内部存储。面板会显示「当前存储：内部存储 / 外接盘 <路径>」。
+
+---
+
+6. 开机自启（M301H 专属做法 + 大坑）
+本 ROM 的 init.bigfish.rc 有 service bigfish-setup /system/etc/init.bigfish.sh（on boot）。
+- ⚠️⭐ 坑：该脚本倒数第 2 行是 /system/bin/wifi_throughput.sh，而它是 while true 死循环——
+  所以钩子必须插在脚本"最前面"（busybox date 之后），放末尾永远执行不到！
+
+adb push install/4-开机兜底.sh /data/nasstart.sh
+adb shell 'chmod 755 /data/nasstart.sh'
+adb shell 'mount -o remount,rw /system'
+adb shell 'busybox cp /system/etc/init.bigfish.sh /system/etc/init.bigfish.sh.bak-orig'
+把钩子插到文件头部（第 2 行后）
+printf '#!/system/bin/sh\nbusybox date -s 201501010000.00\n' > /data/ib.new
+cat /data/local/tmp/开机钩子.txt >> /data/ib.new
+busybox tail -n +3 /system/etc/init.bigfish.sh >> /data/ib.new
+cat /data/ib.new > /system/etc/init.bigfish.sh
+
+> 钩子内容（install/开机钩子.txt）：
+> > ### OpenHW Lab downloader+NAS (M301H) ###
+> if [ -f /data/nasstart.sh ]; then
+>   /system/bin/busybox setsid /system/bin/sh /data/nasstart.sh >/data/nas-boot.log 2>&1 &
+> fi
+> 
+/data/nasstart.sh：起 adbd（重试）→ 挂 proc/sys/dev → chroot /root/nasstart.sh → 延时起面板桌面。
+
+---
+
+7. 装面板桌面（开机显示）
+adb push install/桌面.apk /data/local/tmp/nas.apk
+adb shell 'pm install -r /data/local/tmp/nas.apk'
+adb shell 'am start -n com.openhardwarelab.desktop/.MainActivity'   # 先启动一次（清 stopped 标志）
+
+> ⚠️⭐ 不能设为默认 HOME：该 ROM 有 ellison. block home apk（硬编码只允许内置 IPTV 桌面当 HOME，连 /system/app 系统应用也拦）。
+> → 由开机脚本 am start 把面板拉到前台（效果一样，按 Home 会回 IPTV 桌面）。
+
+---
+
+完成！日常怎么用
+- 加任务：手机/电脑开 http://<盒子IP>:8080/ → 填 磁力 / 种子URL / 直链 → 下载
+- 网盘：电脑「映射网络驱动器」\\<盒子IP>\nas；手机用支持 SMB 的文件管理器
+- 外接盘：插上硬盘/U 盘 → 约 10 秒自动切换（面板显示）；拔掉自动回内部存储
+- DLNA：电视/手机在同一局域网可发现「OpenHW Lab NAS」
+
+---
+常见问题
+- 面板打不开？ 服务就绪约需 10–30 秒；确认 :8080 通。
+- 插了盘没切过去？ 看面板「当前存储」与 /root/diskwatch.log；NTFS/exFAT 由脚本挂载（vold 不认）。
+- 拔盘时正在下载会报错？ 正常；拔盘后新任务自动回内部存储。
+- 想回原系统桌面？ pm enable com.zte.iptvclient.android.launcher_ah/com.chinamobile.launcherjs.main
+
+---
+—— OpenHW Lab · 智能硬件开放实验室 · hi@openhwlab.com

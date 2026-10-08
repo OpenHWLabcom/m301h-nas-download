@@ -1,0 +1,27 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    package="com.openhardwarelab.desktop"
+    android:versionCode="3"
+    android:versionName="2.0">
+  <uses-sdk android:minSdkVersion="17" android:targetSdkVersion="19" />
+  <uses-permission android:name="android.permission.INTERNET" />
+  <application android:label="下载机 · NAS" android:icon="@android:drawable/sym_def_app_icon">
+    <activity android:name=".MainActivity"
+        android:label="下载机 · NAS"
+        android:launchMode="singleTask"
+        android:screenOrientation="landscape"
+        android:configChanges="orientation|screenSize|keyboardHidden|screenLayout|smallestScreenSize"
+        android:exported="true">
+      <intent-filter>
+        <action android:name="android.intent.action.MAIN" />
+        <category android:name="android.intent.category.HOME" />
+        <category android:name="android.intent.category.DEFAULT" />
+        <category android:name="android.intent.category.LAUNCHER" />
+      </intent-filter>
+    </activity>
+    <!-- 兼容旧脚本: am start .OcActivity -> 同一监控画面 -->
+    <activity-alias android:name=".OcActivity"
+        android:targetActivity=".MainActivity"
+        android:exported="true" />
+  </application>
+</manifest>
