@@ -50,6 +50,9 @@ cd install
 - **aria2 RPC**：`http://<盒子IP>:6800/jsonrpc`（token `openhwlab`）
 - **盒子屏幕**：开机自动进入「下载机 · NAS」面板
 
+### 预览
+![M301H 下载机 · NAS 面板](docs/预览-面板.png)
+
 ---
 
 ## 🇬🇧 English
